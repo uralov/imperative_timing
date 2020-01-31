@@ -5,7 +5,7 @@ import pytest
 
 from selenium.webdriver.support.wait import WebDriverWait
 from selenium.common.exceptions import NoSuchElementException, TimeoutException
-from imperative_timing import Timer, drivefy
+from imperative_timing import NormalWebDriverWait, drivefy
 
 
 class ActionMock:
@@ -59,15 +59,14 @@ def test_drivefy(driver_mock):
 
 
 def test_timer_exhausting(driver_mock):
-    wait = WebDriverWait(driver_mock, 1, 0.1)
-    timer = Timer(wait)
+    wait = NormalWebDriverWait(driver_mock, 1, 0.1)
     webelement_mock = "WebElementMock"
     find_element_mocks = [ActionMock(0.4, NoSuchElementException, webelement_mock)
                           for _ in range(3)]
-    assert timer.wait.until(find_element_mocks[0]) == webelement_mock
-    assert timer.wait.until(find_element_mocks[1]) == webelement_mock
+    assert wait.until(find_element_mocks[0]) == webelement_mock
+    assert wait.until(find_element_mocks[1]) == webelement_mock
     with pytest.raises(TimeoutException):
-        timer.wait.until(find_element_mocks[2])
+        wait.until(find_element_mocks[2])
 
 
 @pytest.mark.parametrize("timeout, poll_duration, ignored_exceptions", [
@@ -77,25 +76,24 @@ def test_timer_exhausting(driver_mock):
     for ignored_exceptions in (None, (FileNotFoundError, ValueError))
 ])
 def test_spawn(driver_mock, timeout, poll_duration, ignored_exceptions):
-    wait = WebDriverWait(driver_mock, 1, 0.1)
-    prototimer = Timer(wait)
-    timer = prototimer.spawn(max_timeout=timeout, poll_duration=poll_duration,
-                             ignored_exceptions=ignored_exceptions)
+    protowait = NormalWebDriverWait(driver_mock, 1, 0.1)
+    wait = protowait.spawn(max_timeout=timeout, min_poll_duration=poll_duration,
+                           ignored_exceptions=ignored_exceptions)
 
-    expected_timeout = prototimer.timeout \
-        if timeout is None or timeout > prototimer.timeout \
+    expected_timeout = protowait.timeout \
+        if timeout is None or timeout > protowait.timeout \
         else timeout
-    assert timer.timeout == pytest.approx(expected_timeout, abs=0.05)
+    assert wait.timeout == pytest.approx(expected_timeout, abs=0.05)
 
-    expected_poll_duration = prototimer.poll_duration \
+    expected_poll_duration = protowait.min_poll_duration \
         if poll_duration is None \
         else poll_duration
-    assert timer.poll_duration == expected_poll_duration
+    assert wait.min_poll_duration == expected_poll_duration
 
-    expected_ignored_exceptions = prototimer.ignored_exceptions \
+    expected_ignored_exceptions = protowait._ignored_exceptions \
         if ignored_exceptions is None \
         else ignored_exceptions
-    assert all(exc in timer.ignored_exceptions for exc in expected_ignored_exceptions)
+    assert all(exc in wait._ignored_exceptions for exc in expected_ignored_exceptions)
 
 
 @pytest.mark.parametrize("mocks_timeouts", [
@@ -107,77 +105,54 @@ def test_spawn(driver_mock, timeout, poll_duration, ignored_exceptions):
 ])
 def test_wait_until_any(driver_mock, mocks_timeouts: tuple):
     total_timeout, poll_duration = 1, 0.05
-    wait = WebDriverWait(driver_mock, total_timeout, poll_duration)
-    timer = Timer(wait)
+    wait = NormalWebDriverWait(driver_mock, total_timeout, poll_duration)
     action_mocks = [ActionMock(timeout=mt, return_before=None, return_after=str(mt))
                     for mt in mocks_timeouts]
     min_timeout = min(mocks_timeouts)
     if min_timeout >= total_timeout:
         with pytest.raises(TimeoutException):
-            timer.wait_until_any(action_mocks)
+            wait.until_any(action_mocks)
     else:
-        common_timeout = float(timer.wait_until_any(action_mocks))
+        common_timeout = float(wait.until_any(action_mocks))
         assert common_timeout == pytest.approx(min_timeout, abs=poll_duration)
 
 
 def test_attempts(driver_mock):
     total_timeout, poll_duration = 1, 0.05
-    wait = WebDriverWait(driver_mock, total_timeout, poll_duration, LookupError)
-    timer = Timer(wait)
-    partial_timeout = timer.timeout / 5
+    wait = NormalWebDriverWait(driver_mock, total_timeout, poll_duration)
+    partial_timeout = wait.timeout / 5
 
     throw_no_element = ActionMock(timeout=partial_timeout,
                                   return_before=NoSuchElementException,
                                   return_after=None)
-    for attempt in timer.attempt():
-        with attempt:
+    for attempt in wait.attempts():
+        with attempt.suppress(NoSuchElementException):
             throw_no_element(driver_mock)
+            break
     expected_timeout = total_timeout - partial_timeout
-    assert timer.timeout == pytest.approx(expected_timeout, abs=.05)
-
-    throw_custom = ActionMock(timeout=partial_timeout,
-                              return_before=LookupError,
-                              return_after=None)
-    for attempt in timer.attempt():
-        with attempt:
-            throw_custom(driver_mock)
-    expected_timeout = expected_timeout - partial_timeout
-    assert timer.timeout == pytest.approx(expected_timeout, abs=.05)
-
-    throw_custom = ActionMock(timeout=partial_timeout,
-                              return_before=LookupError,
-                              return_after=None)
-    attempt = timer.attempt()
-    for attempt in attempt:
-        with attempt:
-            attempt.raise_success("success - 42")
-            throw_custom(driver_mock)
-    assert timer.timeout == pytest.approx(expected_timeout, abs=.05)
-    assert attempt.result == "success - 42"
-
-    bad_condition = ActionMock(timeout=partial_timeout,
-                               return_before=True,
-                               return_after=False)
-    for attempt in timer.attempt():
-        with attempt:
-            if bad_condition(driver_mock):
-                attempt.raise_failure()
-            attempt.raise_success()
-    expected_timeout = expected_timeout - partial_timeout
-    assert timer.timeout == pytest.approx(expected_timeout, abs=.05)
+    assert wait.timeout == pytest.approx(expected_timeout, abs=.05)
 
     throw_no_element = ActionMock(timeout=partial_timeout,
                                   return_before=NoSuchElementException,
                                   return_after=None)
-    for attempt in timer.attempt():
-        with attempt:
-            for subatempt in timer.spawn(max_timeout=partial_timeout / 3).attempt():
-                with subatempt:
-                    throw_no_element(driver_mock)
-    expected_timeout = expected_timeout - partial_timeout
-    assert timer.timeout == pytest.approx(expected_timeout, abs=.05)
+    attempts = wait.attempts()
+    for attempt in attempts:
+        with attempt as success:
+            success("success - 42")
+            throw_no_element(driver_mock)
+    assert wait.timeout == pytest.approx(expected_timeout, abs=.05)
+    assert attempt.result == "success - 42" == attempts.result
+
+    for attempt in wait.attempts():
+        with attempt as success1:
+            for subatempt in wait.attempts():
+                with subatempt as success2:
+                    success1(42)
+    assert wait.timeout == pytest.approx(expected_timeout, abs=.05)
+    assert attempt.result == 42
+    assert subatempt.result is None
 
     with pytest.raises(TimeoutException):
-        for attempt in timer.attempt():
+        for attempt in wait.attempts():
             with attempt:
-                attempt.raise_failure()
+                pass

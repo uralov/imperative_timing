@@ -1,1 +1,1 @@
-from .timer import Timer, drivefy
+from .timer import AttemptSeries, NormalWebDriverWait, drivefy
