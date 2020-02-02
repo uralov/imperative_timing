@@ -69,6 +69,18 @@ def test_timer_exhausting(driver_mock):
         wait.until(find_element_mocks[2])
 
 
+def test_wait_until(driver_mock):
+    wait = NormalWebDriverWait(driver_mock, 1, 0.1)
+    webelement_mock = "WebElementMock"
+    find_element_mock = ActionMock(0.4, webelement_mock, NoSuchElementException)
+    find_elements_mock = ActionMock(0.4, [webelement_mock], [])
+    condition_mock = ActionMock(0.4, True, False)
+    assert wait.until_not(find_element_mock) is True  # mimic WebDriverWait behavior
+    assert wait.until_not(find_elements_mock) == []
+    with pytest.raises(TimeoutException):
+        wait.until_not(condition_mock)
+
+
 @pytest.mark.parametrize("timeout, poll_duration, ignored_exceptions", [
     (timeout, poll_duration, ignored_exceptions)
     for timeout in (None, 0.5, 2)
@@ -94,6 +106,15 @@ def test_spawn(driver_mock, timeout, poll_duration, ignored_exceptions):
         if ignored_exceptions is None \
         else ignored_exceptions
     assert all(exc in wait._ignored_exceptions for exc in expected_ignored_exceptions)
+
+
+def test_from_and_to_standart_wait(driver_mock):
+    standart = WebDriverWait(driver_mock, 6, 1)
+    normal = NormalWebDriverWait.from_standart_wait(standart, eventually_expires=False)
+    standart2 = normal.to_standart_wait()
+    assert standart._timeout == standart2._timeout
+    assert standart._poll == standart2._poll
+    assert set(standart._ignored_exceptions) == set(standart2._ignored_exceptions)
 
 
 @pytest.mark.parametrize("mocks_timeouts", [

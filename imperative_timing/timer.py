@@ -71,12 +71,19 @@ class NormalWebDriverWait:
         self._ignored_exceptions = tuple(self._ignored_exceptions)
 
     @classmethod
-    def from_wait(cls, wait: WebDriverWait, eventually_expires=True):
+    def from_standart_wait(cls, wait: WebDriverWait, eventually_expires=True):
         return cls(driver=wait._driver,
                    timeout=wait._timeout,
                    min_poll_duration=wait._poll,
                    ignore_exceptions=wait._ignored_exceptions,
                    eventually_expires=eventually_expires)
+
+    def to_standart_wait(self) -> WebDriverWait:
+        poll_duration = self.min_poll_duration
+        if poll_duration == 0:
+            # standart WebDriverWait replaces 0 to 0.5 in order to "avoid the divide by zero"
+            poll_duration = 1e-10
+        return WebDriverWait(self.driver, self.timeout, poll_duration, self._ignored_exceptions)
 
     @property
     def driver(self) -> WebDriver:
@@ -91,7 +98,7 @@ class NormalWebDriverWait:
         return self._timer.timeout()
 
     def _until_predicate(self, method: FromWebDriver[T],
-                        predicate: ty.Callable[[T], bool], message: str = '') -> T:
+                         predicate: ty.Callable[[T], bool], message: str = '') -> T:
         """Calls the method provided with the driver as an argument until the \
         return value not satisfied predicate."""
         screen = None
@@ -104,6 +111,8 @@ class NormalWebDriverWait:
                 if predicate(value):
                     return value
             except self._ignored_exceptions as exc:
+                if predicate(None):
+                    return True  # it's True just in order to copy WebDriverWait behavior
                 screen = getattr(exc, 'screen', None)
                 stacktrace = getattr(exc, 'stacktrace', None)
             sleep(poll_timer.timeout())
@@ -122,9 +131,12 @@ class NormalWebDriverWait:
         return self._until_predicate(method, lambda x: not x, message)
 
     def until_any(self, methods: ty.Iterable[FromWebDriver[T]]) -> T:
+        """Calls specified methods provided with driver as an argument until
+        one of them return value not convertible to False"""
         return self.until(self._checker_any(methods))
 
     def _checker_any(self, methods: ty.Iterable[FromWebDriver[T]]) -> FromWebDriver[T]:
+        """Wraps methods methods provided with driver as an argument in a single such method"""
         def _check_any(driver):
             for method in methods:
                 with suppress(self._ignored_exceptions):
@@ -138,6 +150,8 @@ class NormalWebDriverWait:
               min_poll_duration=None,
               ignored_exceptions=None,
               ):  # type: (float, float, OneOrMany[Exception]) -> NormalWebDriverWait
+        """Creates new instance of `NormalWebDriverWait`, substituting specified parameters
+        and copies unspecified from prototype instance"""
         timer = self._timer
 
         if max_timeout is None:
@@ -158,10 +172,59 @@ class NormalWebDriverWait:
                               eventually_expires=timer.running)
 
     def attempts(self):
+        """Convenient way to create `AttemptSeries` instance with `timeout` and
+        `min_poll_duration` like in current `NormalWebDriverWait` instance"""
         return AttemptSeries(self.timeout, self.min_poll_duration)
 
 
 class AttemptSeries:
+    """Allows to iterate over infinite `Attempt` instances until `timeout` expires or
+    `Attempt` or `AttemptSeries` instance "succeed". Standart usage:
+
+    `for attempt in wait.attempts():
+        with attempt as success:
+            success(42)`
+
+    `success` raises special exception that would caught by `attempt` that created `success`,
+    and stops infinite iteration of attempt. `Attempt.result` would hold value `42`
+    or any other value passed to `success()`. If there a nested contexts exception would
+    still be caught by "parent" `attempt`:
+    `
+    >>> series = AttemptSeries(1, 0.1)
+    >>> subseries = AttemptSeries(0.5, 0.1)
+    >>> for attempt in series:
+    ...     with attempt as success1:
+    ...         for subatempt in subseries:
+    ...             with subatempt as success2:
+    ...                 success1("123")
+    >>> assert attempt.result == "123" == series.result
+    >>> assert subatempt.result is None is subseries.result
+
+    `
+
+    If attempt not able to succeed in `timeout`
+    `selenium.common.exceptions.TimeoutException` would be raised.
+    Examples below are sophisticated and computationally expensive way
+    to wait a second and throw `TimeoutException`:
+    `
+    >>> for _ in AttemptSeries(1):  # doctest: +ELLIPSIS
+    ...     pass
+    Traceback (most recent call last):
+        ...
+    selenium.common.exceptions.TimeoutException: ...
+
+    `
+
+    `
+    >>> for attempt in AttemptSeries(1):  # doctest: +ELLIPSIS
+    ...    with attempt as _:
+    ...        pass
+    Traceback (most recent call last):
+        ...
+    selenium.common.exceptions.TimeoutException: ...
+
+    `
+    """
     def __init__(self, timeout: float, min_poll_duration: float = 0):
         self._timer_total = _Timer(timeout, autostart=True)
         self._min_poll_duration = min_poll_duration
@@ -195,7 +258,19 @@ class AttemptSeries:
 
 
 class Attempt:
+    """Explained in `AttemptSeries`. Additionally, `Attempt` instance could
+    set exceptions that would be suppresed like `contextlib.suppress`
+    `
+    >>> for attempt in AttemptSeries(1):  # doctest: +ELLIPSIS
+    ...     with attempt.suppress(NoSuchElementException) as _:
+    ...         raise NoSuchElementException
+    Traceback (most recent call last):
+        ...
+    selenium.common.exceptions.TimeoutException: ...
+    <BLANKLINE>
 
+    `
+    """
     def __init__(self, series: AttemptSeries):
         self._series = series
         self._ignored_exceptions = tuple()
@@ -230,3 +305,4 @@ class Attempt:
                 raise TimeoutException from exc_val
             else:
                 return True
+

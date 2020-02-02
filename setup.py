@@ -1,7 +1,7 @@
 from setuptools import setup
 
 setup(name='imperative_timing',
-      version='0.1',
+      version='0.2',
       description='More convenient way to manage timings in selenium scenarios',
       url='http://github.com/TODO',
       packages=['imperative_timing'],
